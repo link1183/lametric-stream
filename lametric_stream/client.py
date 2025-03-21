@@ -1,18 +1,23 @@
+"""
+Main LMStream client for the LaMetric Stream library.
+"""
+
 import socket
 import struct
 import time
-import requests
 import base64
-import os
-import logging
 import binascii
+import logging
 import threading
-from typing import List, Tuple, Dict, Optional, Union, Any
-from dataclasses import dataclass
 from enum import Enum
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-from dotenv import load_dotenv
+from typing import List, Tuple, Dict, Optional, Union, Any
+
+import requests
+
+from .utils import CanvasArea, RequestsRetrySession
+from .fonts import FONT_5X7, FONT_DESCENDERS
+from .animation import AnimationType, create_animation
+
 
 # Set up logging
 logging.basicConfig(
@@ -51,102 +56,6 @@ class PostProcessType(Enum):
     EFFECT = "effect"
 
 
-class AnimationType(Enum):
-    """Animation types."""
-
-    BLINK = "blink"
-    WAVE = "wave"
-    PULSE = "pulse"
-
-
-@dataclass
-class CanvasArea:
-    """Represents a canvas area for streaming."""
-
-    width: int
-    height: int
-    pixels: List[Tuple[int, int, int]]
-
-    x: int = 0
-    y: int = 0
-
-    def validate(self) -> None:
-        """Validate canvas area dimensions and pixel data."""
-        if not (0 <= self.x and 0 <= self.y):
-            raise ValueError(f"Invalid coordinates: ({self.x}, {self.y})")
-
-        if not (0 < self.width and 0 < self.height):
-            raise ValueError(f"Invalid dimensions: {self.width}x{self.height}")
-
-        expected_pixels = self.width * self.height
-        if len(self.pixels) != expected_pixels:
-            raise ValueError(
-                f"Expected {expected_pixels} pixels, got {len(self.pixels)}"
-            )
-
-        for i, pixel in enumerate(self.pixels):
-            if len(pixel) != 3:
-                raise ValueError(f"Pixel {i} has {len(pixel)} values, expected 3 (RGB)")
-
-            for j, value in enumerate(pixel):
-                if not (0 <= value <= 255):
-                    raise ValueError(
-                        f"Pixel {i}, component {j} has value {value}, expected 0-255"
-                    )
-
-
-class RequestsRetrySession:
-    """Creates a requests session with retry capabilities."""
-
-    @staticmethod
-    def create(
-        retries: int = 3,
-        backoff_factor: float = 0.3,
-        status_forcelist: Tuple[int, int, int, int] = (500, 502, 503, 504),
-    ) -> requests.Session:
-        """Create a requests session with retry configuration.
-
-        Args:
-            retries: Number of retry attempts
-            backoff_factor: Backoff factor between retries
-            status_forcelist: Status codes to retry on
-            timeout: Request timeout in seconds
-
-        Returns:
-            Configured requests.Session object
-        """
-        session = requests.Session()
-        retry = Retry(
-            total=retries,
-            read=retries,
-            connect=retries,
-            backoff_factor=backoff_factor,
-            status_forcelist=status_forcelist,
-        )
-        adapter = HTTPAdapter(max_retries=retry)
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        return session
-
-
-class LMStreamError(Exception):
-    """Base exception for LMStream errors."""
-
-    pass
-
-
-class APIError(LMStreamError):
-    """Raised when API requests fail."""
-
-    pass
-
-
-class ProtocolError(LMStreamError):
-    """Raised when there's an issue with the LMSP protocol."""
-
-    pass
-
-
 class LMStream:
     """Client for streaming content to LaMetric devices using LMSP protocol."""
 
@@ -159,9 +68,8 @@ class LMStream:
         """Initialize the LaMetric Streaming client.
 
         Args:
-            ip: IP address of the LaMetric device (overrides env file)
+            ip: IP address of the LaMetric device
             api_key: API key for the device
-            timeout: Timeout for API requests in seconds
             max_retries: Maximum number of retries for API requests
         """
 
@@ -658,6 +566,7 @@ class LMStream:
 
                 row_color = (r, g, b)
                 pixels.extend([row_color] * width)
+
         if duration is not None:
             self.send_frame_for_duration(pixels=pixels, duration=duration)
         else:
@@ -692,154 +601,6 @@ class LMStream:
             clear_between_loops: Whether to show a blank screen between loops
             min_display_time: Minimum time in seconds to display static text
         """
-        # 5x7 font, where 1 is active and 0 is inactive
-        FONT_5X7 = {
-            "A": [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-            "B": [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
-            "C": [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
-            "D": [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
-            "E": [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
-            "F": [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
-            "G": [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111],
-            "H": [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-            "I": [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-            "J": [0b00111, 0b00010, 0b00010, 0b00010, 0b10010, 0b10010, 0b01100],
-            "K": [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
-            "L": [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
-            "M": [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
-            "N": [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
-            "O": [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-            "P": [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
-            "Q": [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
-            "R": [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
-            "S": [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110],
-            "T": [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
-            "U": [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-            "V": [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
-            "W": [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010],
-            "X": [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
-            "Y": [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
-            "Z": [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
-            "a": [0b00000, 0b00000, 0b01110, 0b00001, 0b01111, 0b10001, 0b01111],
-            "b": [0b10000, 0b10000, 0b10110, 0b11001, 0b10001, 0b10001, 0b11110],
-            "c": [0b00000, 0b00000, 0b01110, 0b10001, 0b10000, 0b10001, 0b01110],
-            "d": [0b00001, 0b00001, 0b01101, 0b10011, 0b10001, 0b10001, 0b01111],
-            "e": [0b00000, 0b00000, 0b01110, 0b10001, 0b11111, 0b10000, 0b01110],
-            "f": [0b00110, 0b01001, 0b01000, 0b11100, 0b01000, 0b01000, 0b01000],
-            "h": [0b10000, 0b10000, 0b10110, 0b11001, 0b10001, 0b10001, 0b10001],
-            "i": [0b00100, 0b00000, 0b01100, 0b00100, 0b00100, 0b00100, 0b01110],
-            "k": [0b10000, 0b10000, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010],
-            "l": [0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-            "m": [0b00000, 0b00000, 0b11010, 0b10101, 0b10101, 0b10101, 0b10101],
-            "n": [0b00000, 0b00000, 0b10110, 0b11001, 0b10001, 0b10001, 0b10001],
-            "o": [0b00000, 0b00000, 0b01110, 0b10001, 0b10001, 0b10001, 0b01110],
-            "r": [0b00000, 0b00000, 0b10110, 0b11001, 0b10000, 0b10000, 0b10000],
-            "s": [0b00000, 0b00000, 0b01111, 0b10000, 0b01110, 0b00001, 0b11110],
-            "t": [0b00100, 0b00100, 0b01110, 0b00100, 0b00100, 0b00101, 0b00010],
-            "u": [0b00000, 0b00000, 0b10001, 0b10001, 0b10001, 0b10011, 0b01101],
-            "v": [0b00000, 0b00000, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
-            "w": [0b00000, 0b00000, 0b10001, 0b10001, 0b10101, 0b10101, 0b01010],
-            "x": [0b00000, 0b00000, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001],
-            "z": [0b00000, 0b00000, 0b11111, 0b00010, 0b00100, 0b01000, 0b11111],
-            "0": [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
-            "1": [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-            "2": [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
-            "3": [0b01110, 0b10001, 0b00001, 0b00110, 0b00001, 0b10001, 0b01110],
-            "4": [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
-            "5": [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
-            "6": [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
-            "7": [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
-            "8": [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
-            "9": [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
-            " ": [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000],
-            "!": [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100],
-            "?": [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b00000, 0b00100],
-            ".": [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100],
-            ",": [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00100, 0b01000],
-            ":": [0b00000, 0b00100, 0b00000, 0b00000, 0b00000, 0b00100, 0b00000],
-            ";": [0b00000, 0b00100, 0b00000, 0b00000, 0b00000, 0b00100, 0b01000],
-            "-": [0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000],
-            "+": [0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000],
-            "*": [0b00000, 0b10101, 0b01110, 0b11111, 0b01110, 0b10101, 0b00000],
-            "/": [0b00000, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b00000],
-            "\\": [0b00000, 0b10000, 0b01000, 0b00100, 0b00010, 0b00001, 0b00000],
-            "=": [0b00000, 0b00000, 0b11111, 0b00000, 0b11111, 0b00000, 0b00000],
-            "_": [0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b11111],
-            "(": [0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010],
-            ")": [0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000],
-            "[": [0b01110, 0b01000, 0b01000, 0b01000, 0b01000, 0b01000, 0b01110],
-            "]": [0b01110, 0b00010, 0b00010, 0b00010, 0b00010, 0b00010, 0b01110],
-            "{": [0b00110, 0b00100, 0b00100, 0b01000, 0b00100, 0b00100, 0b00110],
-            "}": [0b01100, 0b00100, 0b00100, 0b00010, 0b00100, 0b00100, 0b01100],
-            "<": [0b00010, 0b00100, 0b01000, 0b10000, 0b01000, 0b00100, 0b00010],
-            ">": [0b01000, 0b00100, 0b00010, 0b00001, 0b00010, 0b00100, 0b01000],
-            "^": [0b00100, 0b01010, 0b10001, 0b00000, 0b00000, 0b00000, 0b00000],
-            "#": [0b01010, 0b01010, 0b11111, 0b01010, 0b11111, 0b01010, 0b01010],
-            "%": [0b11000, 0b11001, 0b00010, 0b00100, 0b01000, 0b10011, 0b00011],
-            "|": [0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
-            "~": [0b00000, 0b00000, 0b01010, 0b10101, 0b00000, 0b00000, 0b00000],
-            "'": [0b00100, 0b00100, 0b00100, 0b00000, 0b00000, 0b00000, 0b00000],
-            '"': [0b01010, 0b01010, 0b01010, 0b00000, 0b00000, 0b00000, 0b00000],
-            "`": [0b01000, 0b00100, 0b00010, 0b00000, 0b00000, 0b00000, 0b00000],
-            "&": [0b01100, 0b10010, 0b10100, 0b01000, 0b10101, 0b10010, 0b01101],
-            "@": [0b01110, 0b10001, 0b10111, 0b10101, 0b10111, 0b10000, 0b01111],
-            "INVALID": [0b11111, 0b11111, 0b11111, 0b11111, 0b11111, 0b11111, 0b11111],
-        }
-
-        # Characters with descenders (8 rows instead of 7)
-        FONT_DESCENDERS = {
-            "g": [
-                0b00000,
-                0b00000,
-                0b01111,
-                0b10001,
-                0b10001,
-                0b01111,
-                0b00001,
-                0b01110,
-            ],
-            "j": [
-                0b00010,
-                0b00000,
-                0b00110,
-                0b00010,
-                0b00010,
-                0b00010,
-                0b10010,
-                0b01100,
-            ],
-            "p": [
-                0b00000,
-                0b00000,
-                0b11110,
-                0b10001,
-                0b10001,
-                0b11110,
-                0b10000,
-                0b10000,
-            ],
-            "q": [
-                0b00000,
-                0b00000,
-                0b01111,
-                0b10001,
-                0b10001,
-                0b01111,
-                0b00001,
-                0b00001,
-            ],
-            "y": [
-                0b00000,
-                0b00000,
-                0b10001,
-                0b10001,
-                0b10001,
-                0b01111,
-                0b00001,
-                0b01110,
-            ],
-        }
-
         FONT_WIDTH = 5
         FONT_HEIGHT = 7
         DESCENDER_HEIGHT = 8
@@ -1047,10 +808,10 @@ class LMStream:
         """Send a predefined animation to the device.
 
         Args:
-            animation_type: Type of animation ("pulse", "blink", "wave", etc.)
+            animation_type: Type of animation (BLINK, PULSE, WAVE)
             colors: List of RGB colors to use in the animation
             duration: Total duration of the animation in seconds
-            speed: Speed multiplier for the animation
+            speed: Speed multiplier for the animation (lower is faster)
         """
         width = self.canvas_size.get("width")
         height = self.canvas_size.get("height")
@@ -1058,92 +819,12 @@ class LMStream:
         if not width or not height:
             raise ValueError("Canvas dimensions not available")
 
-        animation_frames = []
-        frame_durations = []
-
-        # Generate frames based on animation type
-        if animation_type == AnimationType.BLINK:
-            # Simple blink animation alternating between colors
-            for color in colors:
-                # Full frame of this color
-                frame = [color] * (width * height)
-                animation_frames.append(frame)
-                frame_durations.append(speed)
-
-        elif animation_type == AnimationType.PULSE:
-            # Pulse animation that fades between colors
-            steps = 10
-            for i in range(len(colors)):
-                color1 = colors[i]
-                color2 = colors[(i + 1) % len(colors)]
-
-                # Create transition frames between colors
-                for step in range(steps):
-                    t = step / (steps - 1)
-                    r = int(color1[0] * (1 - t) + color2[0] * t)
-                    g = int(color1[1] * (1 - t) + color2[1] * t)
-                    b = int(color1[2] * (1 - t) + color2[2] * t)
-
-                    frame = [(r, g, b)] * (width * height)
-                    animation_frames.append(frame)
-                    frame_durations.append(
-                        0.1 / speed
-                    )  # 0.1 seconds per transition frame
-
-        elif animation_type == AnimationType.WAVE:
-            # Wave animation moving across the display
-            for offset in range(width * 2):
-                frame = []
-                for _ in range(height):
-                    for x in range(width):
-                        # Create a wave pattern based on position
-                        color_idx = (x + offset) % len(colors)
-                        frame.append(colors[color_idx])
-
-                animation_frames.append(frame)
-                frame_durations.append(speed)
-
-        if duration is not None:
-            total_frames = len(animation_frames)
-            frame_duration = duration / total_frames
-            frame_durations = [frame_duration] * total_frames
+        frames, frame_durations = create_animation(
+            animation_type, colors, width, height, speed, duration
+        )
 
         self.send_frames(
-            frames=animation_frames,
+            frames=frames,
             frame_durations=frame_durations,
             loop=(duration is None),
         )
-
-
-if __name__ == "__main__":
-    try:
-        load_dotenv()
-
-        API_KEY = os.getenv("API_KEY")
-        IP_ADDRESS = os.getenv("IP_ADDRESS")
-
-        if not API_KEY:
-            raise ValueError("API_KEY not found")
-
-        if not IP_ADDRESS:
-            raise ValueError("IP_ADDRESS not found")
-
-        with LMStream(api_key=API_KEY, ip=IP_ADDRESS) as stream:
-            stream.send_text(
-                "text",
-                text_color=(255, 255, 0),
-                duration=1,
-                bg_color=(0, 0, 255),
-            )
-
-            stream.send_animation(
-                animation_type=AnimationType.WAVE,
-                colors=[(255, 0, 0)],
-                duration=5,
-                speed=10,
-            )
-
-    except KeyboardInterrupt:
-        print("Streaming stopped by user")
-    except Exception as e:
-        print(f"Error: {str(e)}")
