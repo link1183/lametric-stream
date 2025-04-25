@@ -13,10 +13,12 @@ from enum import Enum
 from typing import List, Tuple, Dict, Optional, Union, Any
 
 import requests
+from requests.models import ProtocolError
+
+from lametric_stream.exceptions import APIError
 
 from .utils import CanvasArea, RequestsRetrySession
 from .fonts import FONT_5X7, FONT_DESCENDERS
-from .animation import AnimationType, create_animation
 
 
 # Set up logging
@@ -519,59 +521,6 @@ class LMStream:
         else:
             self.send_frame(pixels=pixels)
 
-    def send_gradient(
-        self,
-        start_color: Tuple[int, int, int],
-        end_color: Tuple[int, int, int],
-        horizontal: bool = True,
-        duration: Optional[float] = None,
-    ) -> None:
-        """Send a gradient frame to the device.
-
-        Args:
-            start_color: Starting RGB color
-            end_color: Ending RGB color
-            horizontal: If True, gradient runs left to right, otherwise top to bottom
-            duration: Optional duration in seconds to display the frame
-        """
-        width = self.canvas_size.get("width")
-        height = self.canvas_size.get("height")
-
-        if not width or not height:
-            raise ValueError("Canvas dimensions not available")
-
-        pixels = []
-
-        if horizontal:
-            for y in range(height):
-                for x in range(width):
-                    # Calculate gradient position (0 to 1)
-                    t = x / (width - 1) if width > 1 else 0
-
-                    # Interpolate between colors
-                    r = int(start_color[0] * (1 - t) + end_color[0] * t)
-                    g = int(start_color[1] * (1 - t) + end_color[1] * t)
-                    b = int(start_color[2] * (1 - t) + end_color[2] * t)
-
-                    pixels.append((r, g, b))
-        else:
-            for y in range(height):
-                # Calculate gradient position (0 to 1)
-                t = y / (height - 1) if height > 1 else 0
-
-                # Interpolate between colors
-                r = int(start_color[0] * (1 - t) + end_color[0] * t)
-                g = int(start_color[1] * (1 - t) + end_color[1] * t)
-                b = int(start_color[2] * (1 - t) + end_color[2] * t)
-
-                row_color = (r, g, b)
-                pixels.extend([row_color] * width)
-
-        if duration is not None:
-            self.send_frame_for_duration(pixels=pixels, duration=duration)
-        else:
-            self.send_frame(pixels=pixels)
-
     def send_text(
         self,
         text: str,
@@ -797,34 +746,3 @@ class LMStream:
                     frame_durations.append(end_pause)
 
                 self.send_frames(frames, frame_durations=frame_durations, loop=True)
-
-    def send_animation(
-        self,
-        animation_type: AnimationType,
-        colors: List[Tuple[int, int, int]],
-        duration: Optional[float] = None,
-        speed: float = 1.0,
-    ) -> None:
-        """Send a predefined animation to the device.
-
-        Args:
-            animation_type: Type of animation (BLINK, PULSE, WAVE)
-            colors: List of RGB colors to use in the animation
-            duration: Total duration of the animation in seconds
-            speed: Speed multiplier for the animation (lower is faster)
-        """
-        width = self.canvas_size.get("width")
-        height = self.canvas_size.get("height")
-
-        if not width or not height:
-            raise ValueError("Canvas dimensions not available")
-
-        frames, frame_durations = create_animation(
-            animation_type, colors, width, height, speed, duration
-        )
-
-        self.send_frames(
-            frames=frames,
-            frame_durations=frame_durations,
-            loop=(duration is None),
-        )
