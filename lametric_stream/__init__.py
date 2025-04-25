@@ -9,19 +9,26 @@ This library allows you to:
 - Show solid colors and gradients
 - Create custom animations
 - Stream real-time data visualizations
+- Create independent screen regions with separate content
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Export public API
 from .client import LMStream, ContentEncoding, RenderMode, FillType, PostProcessType
-from .animation import AnimationType
 from .exceptions import LMStreamError, APIError, ProtocolError
-from .utils import CanvasArea
+from .utils import (
+    CanvasArea,
+    ScreenRegion,
+    RegionManager,
+    RegionContent,
+    TextContent,
+    ColorContent,
+    AnimationContent,
+)
 
 __all__ = [
     "LMStream",
-    "AnimationType",
     "ContentEncoding",
     "RenderMode",
     "FillType",
@@ -30,4 +37,10 @@ __all__ = [
     "APIError",
     "ProtocolError",
     "CanvasArea",
+    "ScreenRegion",
+    "RegionManager",
+    "RegionContent",
+    "TextContent",
+    "ColorContent",
+    "AnimationContent",
 ]

@@ -20,7 +20,7 @@ pip install lametric-stream
 ## Quick Start
 
 ```python
-from lametric_stream import LMStream, AnimationType
+from lametric_stream import LMStream
 
 # Initialize with device API key and IP address
 with LMStream(api_key="YOUR_API_KEY", ip="192.168.1.123") as stream:
@@ -29,13 +29,6 @@ with LMStream(api_key="YOUR_API_KEY", ip="192.168.1.123") as stream:
 
     # Display a solid color for 3 seconds
     stream.send_solid_color((255, 0, 0), duration=3.0)
-
-    # Send an animation
-    stream.send_animation(
-        animation_type=AnimationType.WAVE,
-        colors=[(255, 0, 0), (0, 255, 0), (0, 0, 255)],
-        duration=5.0
-    )
 ```
 
 ## Prerequisites
@@ -88,33 +81,6 @@ stream.send_gradient(
 )
 ```
 
-### Animations
-
-```python
-from lametric_stream import AnimationType
-
-# Blink between red, green, and blue
-stream.send_animation(
-    animation_type=AnimationType.BLINK,
-    colors=[(255, 0, 0), (0, 255, 0), (0, 0, 255)],
-    duration=10.0
-)
-
-# Pulse animation with custom speed
-stream.send_animation(
-    animation_type=AnimationType.PULSE,
-    colors=[(255, 0, 0), (0, 0, 255)],
-    speed=2.0  # 2x normal speed
-)
-
-# Wave animation
-stream.send_animation(
-    animation_type=AnimationType.WAVE,
-    colors=[(255, 0, 0), (0, 255, 0), (0, 0, 255)],
-    speed=1.0
-)
-```
-
 ### Custom Frames
 
 For advanced use cases, you can send custom pixel data:
@@ -162,14 +128,6 @@ The built-in font supports:
 - Custom text color
 - Custom background color
 - Vertical centering
-
-## Animation Types
-
-The library supports several built-in animations through the `AnimationType` enum:
-
-- `AnimationType.BLINK`: Alternates between specified colors
-- `AnimationType.PULSE`: Fades smoothly between specified colors
-- `AnimationType.WAVE`: Creates a wave-like pattern moving across the display
 
 ## Advanced Usage
 
@@ -225,11 +183,9 @@ stream._send_udp_packet(packet)
 - `send_text(text, text_color, bg_color, ...)`: Display text with various options
 - `send_solid_color(color, duration)`: Display a solid color
 - `send_gradient(start_color, end_color, horizontal, duration)`: Display a gradient
-- `send_animation(animation_type, colors, duration, speed)`: Display built-in animations
 
 ### Enums
 
-- `AnimationType`: Enum for animation types (BLINK, PULSE, WAVE)
 - `ContentEncoding`: Enum for content encoding types (RAW, PNG, JPEG, GIF)
 - `RenderMode`: Enum for render modes (PIXEL, TRIANGLE)
 - `FillType`: Enum for fill types (SCALE, TILE)

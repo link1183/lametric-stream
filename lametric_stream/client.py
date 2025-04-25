@@ -15,9 +15,14 @@ from typing import List, Tuple, Dict, Optional, Union, Any
 import requests
 from requests.models import ProtocolError
 
-from lametric_stream.exceptions import APIError
+from lametric_stream.exceptions import APIError, LMStreamError
 
-from .utils import CanvasArea, RequestsRetrySession
+from .utils import (
+    CanvasArea,
+    RequestsRetrySession,
+    RegionManager,
+    ScreenRegion,
+)
 from .fonts import FONT_5X7, FONT_DESCENDERS
 
 
@@ -62,10 +67,7 @@ class LMStream:
     """Client for streaming content to LaMetric devices using LMSP protocol."""
 
     def __init__(
-        self,
-        api_key: str,
-        ip: str,
-        max_retries: int = 3,
+        self, api_key: str, ip: str, max_retries: int = 3, update_interval: float = 0.05
     ):
         """Initialize the LaMetric Streaming client.
 
@@ -73,6 +75,7 @@ class LMStream:
             ip: IP address of the LaMetric device
             api_key: API key for the device
             max_retries: Maximum number of retries for API requests
+            update_interval: Time in seconds between region updates
         """
 
         self.ip = ip
@@ -90,6 +93,12 @@ class LMStream:
         self.is_streaming = False
         self._socket = None
 
+        # Region management
+        self.region_manager = None
+        self.update_interval = update_interval
+        self._update_thread = None
+        self._update_running = False
+
     def __enter__(self):
         """Context manager entry point - starts streaming session."""
         self._get_device_info()
@@ -100,11 +109,24 @@ class LMStream:
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1048576)
 
+        # Initialize region manager with canvas size
+        self.region_manager = RegionManager(
+            canvas_width=self.canvas_size.get("width", 0),
+            canvas_height=self.canvas_size.get("height", 0),
+        )
+        self.region_manager.set_update_callback(self._on_regions_updated)
+
+        # Start update thread
+        self._start_update_thread()
+
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
         """Context manager exit point - stops streaming and cleans up."""
         try:
+            # Stop update thread
+            self._stop_update_thread()
+
             if self.is_streaming:
                 self.stop_streaming()
         finally:
@@ -746,3 +768,260 @@ class LMStream:
                     frame_durations.append(end_pause)
 
                 self.send_frames(frames, frame_durations=frame_durations, loop=True)
+
+    # Region management methods
+
+    def create_region(
+        self, x: int, y: int, width: int, height: int, region_id: Optional[str] = None
+    ) -> str:
+        """Create a new screen region.
+
+        Args:
+            x: X coordinate of the region
+            y: Y coordinate of the region
+            width: Width of the region
+            height: Height of the region
+            region_id: Optional ID for the region
+
+        Returns:
+            ID of the created region
+
+        Raises:
+            ValueError: If region parameters are invalid
+        """
+        if not self.region_manager:
+            raise LMStreamError("Region manager not initialized")
+
+        return self.region_manager.create_region(x, y, width, height, region_id)
+
+    def create_grid(self, rows: int, cols: int) -> List[str]:
+        """Create a grid of equal-sized regions.
+
+        Args:
+            rows: Number of rows in the grid
+            cols: Number of columns in the grid
+
+        Returns:
+            List of region IDs, ordered row by row
+        """
+        if not self.region_manager:
+            raise LMStreamError("Region manager not initialized")
+
+        return self.region_manager.create_grid(rows, cols)
+
+    def delete_region(self, region_id: str) -> bool:
+        """Delete a region.
+
+        Args:
+            region_id: ID of the region to delete
+
+        Returns:
+            True if the region was deleted, False if not found
+        """
+        if not self.region_manager:
+            raise LMStreamError("Region manager not initialized")
+
+        return self.region_manager.delete_region(region_id)
+
+    def clear_regions(self) -> None:
+        """Delete all regions."""
+        if not self.region_manager:
+            raise LMStreamError("Region manager not initialized")
+
+        self.region_manager.clear_regions()
+
+    def get_region(self, region_id: str) -> Optional[ScreenRegion]:
+        """Get a region by ID.
+
+        Args:
+            region_id: ID of the region to get
+
+        Returns:
+            ScreenRegion object or None if not found
+        """
+        if not self.region_manager:
+            raise LMStreamError("Region manager not initialized")
+
+        return self.region_manager.get_region(region_id)
+
+    def set_region_text(
+        self,
+        region_id: str,
+        text: str,
+        text_color: Tuple[int, int, int] = (255, 255, 255),
+        bg_color: Tuple[int, int, int] = (0, 0, 0),
+        scroll: bool = True,
+        scroll_speed: float = 0.05,
+        center_vertical: bool = True,
+        initial_pause: float = 1.0,
+        end_pause: float = 1.0,
+        clear_between_loops: bool = True,
+    ) -> None:
+        """Set text content for a region.
+
+        Args:
+            region_id: ID of the region to update
+            text: Text to display
+            text_color: RGB color for text
+            bg_color: RGB color for background
+            scroll: Whether to scroll the text (if longer than display)
+            scroll_speed: Speed of scrolling (seconds per column shift)
+            center_vertical: Whether to center text vertically
+            initial_pause: Time to pause before scrolling starts
+            end_pause: Time to pause at the end of scrolling
+            clear_between_loops: Whether to show blank screen between loops
+        """
+        region = self.get_region(region_id)
+        if not region:
+            raise ValueError(f"Region {region_id} not found")
+
+        region.set_text(
+            text=text,
+            text_color=text_color,
+            bg_color=bg_color,
+            scroll=scroll,
+            scroll_speed=scroll_speed,
+            center_vertical=center_vertical,
+            initial_pause=initial_pause,
+            end_pause=end_pause,
+            clear_between_loops=clear_between_loops,
+        )
+
+    def set_region_color(
+        self,
+        region_id: str,
+        color: Union[Tuple[int, int, int], List[Tuple[int, int, int]]],
+        gradient_horizontal: bool = True,
+    ) -> None:
+        """Set color content for a region.
+
+        Args:
+            region_id: ID of the region to update
+            color: Single RGB tuple for solid color or list of RGB tuples for gradient
+            gradient_horizontal: If True, gradient runs horizontally, else vertically
+        """
+        region = self.get_region(region_id)
+        if not region:
+            raise ValueError(f"Region {region_id} not found")
+
+        region.set_color(color=color, gradient_horizontal=gradient_horizontal)
+
+    def set_region_animation(
+        self,
+        region_id: str,
+        frames: List[List[Tuple[int, int, int]]],
+        frame_durations: Union[List[float], float] = 0.1,
+        loop: bool = True,
+    ) -> None:
+        """Set animation content for a region.
+
+        Args:
+            region_id: ID of the region to update
+            frames: List of frames, each frame is a list of RGB tuples
+            frame_durations: Duration for each frame or list of durations
+            loop: Whether to loop the animation
+        """
+        region = self.get_region(region_id)
+        if not region:
+            raise ValueError(f"Region {region_id} not found")
+
+        region.set_animation(frames=frames, frame_durations=frame_durations, loop=loop)
+
+    def clear_region_content(self, region_id: str) -> None:
+        """Clear content from a region.
+
+        Args:
+            region_id: ID of the region to clear
+        """
+        region = self.get_region(region_id)
+        if not region:
+            raise ValueError(f"Region {region_id} not found")
+
+        region.clear_content()
+
+    def show_region(self, region_id: str) -> None:
+        """Show a region.
+
+        Args:
+            region_id: ID of the region to show
+        """
+        region = self.get_region(region_id)
+        if not region:
+            raise ValueError(f"Region {region_id} not found")
+
+        region.active = True
+
+    def hide_region(self, region_id: str) -> None:
+        """Hide a region.
+
+        Args:
+            region_id: ID of the region to hide
+        """
+        region = self.get_region(region_id)
+        if not region:
+            raise ValueError(f"Region {region_id} not found")
+
+        region.active = False
+
+    def _on_regions_updated(self, updated_region_ids: List[str]) -> None:
+        """Handle region updates.
+
+        Args:
+            updated_region_ids: List of IDs of regions that were updated
+        """
+        if not self.is_streaming or not self.region_manager:
+            return
+
+        canvas_frame = self.region_manager.get_canvas_frame()
+
+        try:
+            self.send_frame(
+                pixels=canvas_frame,
+                width=self.canvas_size.get("width"),
+                height=self.canvas_size.get("height"),
+            )
+        except Exception as e:
+            logger.error(f"Error sending updated frame: {str(e)}")
+
+    def _start_update_thread(self) -> None:
+        """Start the thread that updates regions."""
+        if self._update_thread and self._update_thread.is_alive():
+            return
+
+        self._update_running = True
+
+        def update_loop():
+            last_update_time = time.time()
+
+            while self._update_running and self.is_streaming:
+                current_time = time.time()
+                delta_time = current_time - last_update_time
+                last_update_time = current_time
+
+                if self.region_manager:
+                    try:
+                        self.region_manager.update_regions(delta_time)
+                    except Exception as e:
+                        logger.error(f"Error updating regions: {str(e)}")
+
+                # Sleep to maintain update interval
+                sleep_time = max(
+                    0.001, self.update_interval - (time.time() - current_time)
+                )
+                time.sleep(sleep_time)
+
+        self._update_thread = threading.Thread(target=update_loop)
+        self._update_thread.daemon = True
+        self._update_thread.start()
+
+    def _stop_update_thread(self) -> None:
+        """Stop the update thread."""
+        self._update_running = False
+
+        if self._update_thread and self._update_thread.is_alive():
+            try:
+                self._update_thread.join(timeout=1.0)
+            except Exception:
+                pass
+
+            self._update_thread = None
